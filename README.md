@@ -12,6 +12,7 @@ if this is no any code because it's not uploaded or unable to upload.
 
 <details>
 <summary>use timer</summary>
+
  - timer.init : init the timer and add a name in this
 
  - timer.os : help timer.Os get the time
