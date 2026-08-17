@@ -11,6 +11,17 @@ if this is no any code because it's not uploaded or unable to upload.
 ---
 
 <details>
+<summary>use timer</summary>
+ - timer.init : init the timer and add a name in this
+ - timer.os : help timer.Os get the time
+ - timer.Os : get the times
+ - timer.wait : get the timer's time, for example : if timer is 1.38, timer.wait
+ - timer.Renew : update the timer
+</details>
+
+---
+
+<details>
   <summary>
     codes
   </summary>
