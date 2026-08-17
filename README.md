@@ -1,2 +1,10 @@
 # game-easy-use-code
 share the easy use code, in order to avoid repeating the logic
+
+---
+
+I know this will easy to write code. 
+but you use this need to say this code is me. 
+I don't want some people treat these as your own code. 
+
+---
