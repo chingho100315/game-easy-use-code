@@ -24,6 +24,11 @@ if this is no any code because it's not uploaded or unable to upload.
  - timer.Renew : update the timer
 </details>
 
+<details>
+ <summary>use math</summary>
+ - running : get number / number
+</details>
+
 ---
 
 <details>
