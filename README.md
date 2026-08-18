@@ -26,7 +26,9 @@ if this is no any code because it's not uploaded or unable to upload.
 
 <details>
  <summary>use math</summary>
+
  - running : get number / number
+
 </details>
 
 ---
@@ -37,4 +39,6 @@ if this is no any code because it's not uploaded or unable to upload.
   </summary>
 
   - [timer](https://github.com/chingho100315/game-easy-use-code/releases/tag/timer)
+  - [math](https://github.com/chingho100315/game-easy-use-code/releases/tag/math)
+
 </details>
