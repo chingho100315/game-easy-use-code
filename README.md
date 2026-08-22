@@ -31,6 +31,17 @@ if this is no any code because it's not uploaded or unable to upload.
 
 </details>
 
+<details>
+ <summary>
+  use check-rows
+ </summary>
+
+ - this is check folders, no only one file
+
+ - so if you want to check only one file, please you add folder
+
+</details>
+
 ---
 
 <details>
@@ -40,5 +51,6 @@ if this is no any code because it's not uploaded or unable to upload.
 
   - [timer](https://github.com/chingho100315/game-easy-use-code/releases/tag/timer)
   - [math](https://github.com/chingho100315/game-easy-use-code/releases/tag/math)
+  - [check-rows](https://github.com/chingho100315/game-easy-use-code/releases/tag/check-rows)
 
 </details>
