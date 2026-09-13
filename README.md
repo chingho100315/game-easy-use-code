@@ -3,7 +3,7 @@ share the easy use code, in order to avoid repeating the logic
 
 ---
 
-you can see the the [update](https://github.com/chingho100315/game-easy-use-code/UPDATE.md)
+you can see the the [update](https://github.com/chingho100315/game-easy-use-code/blob/main/UPDATE.md)
 
 ---
 
