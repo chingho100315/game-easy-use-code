@@ -19,6 +19,8 @@ you can see the the [update](https://github.com/chingho100315/game-easy-use-code
  - timer.wait : get the timer's time, for example : if timer is 1.38, timer.wait
 
  - timer.Renew : update the timer
+
+ - timer.tinit **v0.2.0** : first is the name, second it's the time list
 </details>
 
 <details>
