@@ -1,0 +1,519 @@
+name: main
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  PYTHONFORANDROID_PREREQUISITES_INSTALL_INTERACTIVE: 0
+  APP_ANDROID_ACCEPT_SDK_LICENSE: "1"
+  ANDROID_SDK_ROOT: /home/runner/.buildozer/android/platform/android-sdk
+  ANDROID_HOME: /home/runner/.buildozer/android/platform/android-sdk
+  PIP_USE_PEP517: "0"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build_unsigned:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Download ZIP from Release
+        run: |
+          set -e
+          TAG=v0.7.1
+          REPO="$GITHUB_REPOSITORY"
+          rm -rf app extracted release.zip
+          echo "REPO=$REPO TAG=$TAG"
+          gh release view "$TAG" --repo "$REPO"
+          if gh release download "$TAG" --repo "$REPO" -p "*.zip" --clobber; then
+            ZIP=$(ls -1 *.zip | head -1)
+            mv "$ZIP" release.zip
+          else
+            gh api "repos/$REPO/zipball/$TAG" > release.zip
+          fi
+          mkdir -p extracted
+          unzip -q release.zip -d extracted
+          PROJECT_DIR=$(find extracted -type f -name "main.py" -exec dirname {} \; | head -1)
+          if [ -z "$PROJECT_DIR" ]; then
+            PROJECT_DIR=$(find extracted -type f -name "__main__.py" -exec dirname {} \; | head -1)
+          fi
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "missing main.py"
+            find extracted -maxdepth 5
+            exit 1
+          fi
+          if [ -d "$PROJECT_DIR/imprisonment" ]; then
+            PROJECT_DIR="$PROJECT_DIR/imprisonment"
+          fi
+          mkdir -p app
+          cp -r "$PROJECT_DIR"/. app/
+          if [ ! -f app/main.py ] && [ -f app/__main__.py ]; then
+            cp app/__main__.py app/main.py
+          fi
+          test -f app/main.py
+          test -f app/buildozer.spec
+          echo "USING $TAG from $PROJECT_DIR"
+          ls -la app/*.py
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Cache NDK/SDK
+        uses: actions/cache@v5
+        with:
+          path: /home/runner/.buildozer
+          key: buildozer-ndk25b-sdk34-v2
+
+      - name: Setup Environment
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y git zip unzip wget python3-pip python3-venv autoconf automake libltdl-dev libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev build-essential gettext
+          pip3 install --user --upgrade buildozer "cython==0.29.36" "setuptools==59.8.0"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          SDK="$ANDROID_SDK_ROOT"
+          mkdir -p "$SDK/cmdline-tools" "$SDK/licenses" "$HOME/.android"
+          touch "$HOME/.android/repositories.cfg"
+          if [ ! -x "$SDK/cmdline-tools/latest/bin/sdkmanager" ]; then
+            curl -fsSL -o /tmp/cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+            unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools
+            rm -rf "$SDK/cmdline-tools/latest"
+            mv /tmp/cmdtools/cmdline-tools "$SDK/cmdline-tools/latest"
+          fi
+          echo "24333f8a63b6825ea9c5514f07c3498d" > "$SDK/licenses/android-sdk-license"
+          echo "84831b9409646161cbf74d67cb9a794" > "$SDK/licenses/android-sdk-preview-license"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" --licenses >/dev/null || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          mkdir -p "$SDK/tools/bin"
+          ln -sf "$SDK/cmdline-tools/latest/bin/sdkmanager" "$SDK/tools/bin/sdkmanager"
+
+      - name: Add local p4a recipes
+        run: |
+          python3 << 'ENDPY'
+          import textwrap
+          from pathlib import Path
+
+          for name in ("pygame-ce", "numpy"):
+              Path(f"app/p4a-recipes/{name}").mkdir(parents=True, exist_ok=True)
+
+          Path("extract.py").write_text(textwrap.dedent(r'''
+          from pathlib import Path
+          p = Path("out.txt")
+          lines = p.read_text(errors="ignore").splitlines() if p.exists() else []
+          skip = ("grpmodule", "Wimplicit", "print-multi-os", "CMake", "GITHUB_")
+          keys = (
+              "FOUND HEADER", "REWROTE pyproject", "PATCHED setup.py",
+              "BUILD_EXT", "BUILD LIBS", "COPIED ", "fatal error",
+              "Command failed", "Error compiling", "not recognized",
+              "IndexError", "RuntimeError", "FileNotFoundError",
+              "AttributeError",
+          )
+          print("=== KEY ===")
+          n = 0
+          for l in lines:
+              if any(s in l for s in skip):
+                  continue
+              if l.startswith("# ") and " = " in l:
+                  continue
+              if any(k in l for k in keys):
+                  print(l[:300])
+                  n += 1
+                  if n >= 50:
+                      break
+          print("=== TRACEBACK ===")
+          tb = 0
+          for i, l in enumerate(lines):
+              if "Traceback (most recent call last)" not in l:
+                  continue
+              tb += 1
+              if tb > 3:
+                  break
+              for x in lines[i:i+30]:
+                  if x.startswith("# ") and " = " in x:
+                      continue
+                  print(x[:300])
+              print("---TB---")
+          print("=== FAIL ===")
+          for i, l in enumerate(lines):
+              if "Command failed" in l or "fatal error:" in l:
+                  for x in lines[max(0, i - 25): i + 6]:
+                      if x.startswith("# ") and " = " in x:
+                          continue
+                      if any(s in x for s in skip):
+                          continue
+                      print(x[:300])
+                  break
+          '''))
+
+          Path("app/p4a-recipes/pygame-ce/__init__.py").write_text(textwrap.dedent(r'''
+          import glob
+          import os
+          import re
+          import sh
+          import shutil
+          from os.path import exists, join
+          from pythonforandroid.logger import shprint
+          from pythonforandroid.recipe import CompiledComponentsPythonRecipe
+          from pythonforandroid.toolchain import current_directory
+
+          BAD = ("Xcode", ".framework", "macOS", "iOS", "tvOS", "VisualC", "mingw", "darwin", "windows")
+
+          class Fmt(dict):
+              def __missing__(self, key):
+                  print("SETUP PLACEHOLDER MISSING", key)
+                  return ""
+
+          class PygameCeRecipe(CompiledComponentsPythonRecipe):
+              version = "2.5.5"
+              url = "https://github.com/pygame-community/pygame-ce/archive/refs/tags/{version}.tar.gz"
+              site_packages_name = "pygame"
+              name = "pygame-ce"
+              depends = ["sdl2", "sdl2_image", "sdl2_mixer", "sdl2_ttf", "setuptools", "jpeg", "png"]
+              call_hostpython_via_targetpython = False
+              install_in_hostpython = False
+
+              def _find_header(self, root, filename):
+                  hits = []
+                  if not root or not os.path.isdir(root):
+                      return hits
+                  for dirpath, dirnames, files in os.walk(root):
+                      dirnames[:] = [d for d in dirnames if d not in (".git", "test", "docs", "Xcode", "VisualC", "mingw")]
+                      if filename not in files:
+                          continue
+                      if any(b in dirpath for b in BAD):
+                          continue
+                      hits.append(dirpath)
+                      parent = os.path.dirname(dirpath)
+                      if os.path.basename(dirpath) == "SDL2" and parent not in hits:
+                          hits.append(parent)
+                      print("FOUND HEADER", filename, dirpath)
+                  hits.sort(key=lambda p: (0 if p.replace("\\\\", "/").endswith("/include") else 1, len(p)))
+                  return hits
+
+              def _inc(self, dirs):
+                  return " ".join("-I" + d for d in dirs[:4])
+
+              def prebuild_arch(self, arch):
+                  super().prebuild_arch(arch)
+                  with current_directory(self.get_build_dir(arch.arch)):
+                      open("pyproject.toml", "w").write(
+                          "[project]\n"
+                          "name = \"pygame-ce\"\n"
+                          "version = \"2.5.5\"\n"
+                          "description = \"Python Game Development\"\n"
+                          "readme = \"README.rst\"\n"
+                          "requires-python = \">=3.9\"\n"
+                          "\n"
+                          "[build-system]\n"
+                          "requires = [\"setuptools\", \"wheel\"]\n"
+                          "build-backend = \"setuptools.build_meta\"\n"
+                      )
+                      print("REWROTE pyproject.toml (keep version, skip meson)")
+                      sp = open("setup.py").read()
+                      sp = sp.replace("from setuptools import setup", "from distutils.core import setup")
+                      open("setup.py", "w").write(sp)
+                      print("PATCHED setup.py to distutils")
+                      setup_template = open(join("buildconfig", "Setup.Android.SDL2.in")).read()
+                      png = self.get_recipe("png", self.ctx)
+                      png_dir = png.get_build_dir(arch.arch)
+                      png_lib_dir = join(png_dir, ".libs") if exists(join(png_dir, ".libs")) else png_dir
+                      jpeg = self.get_recipe("jpeg", self.ctx)
+                      jpeg_dir = jpeg.get_build_dir(arch.arch)
+                      boot = self.ctx.bootstrap.build_dir
+                      jni = join(boot, "jni")
+                      libs = join(boot, "libs", arch.arch)
+                      ndk_lib = getattr(arch, "ndk_lib_dir_versioned", "")
+                      print("JNI DIRS", os.listdir(jni) if os.path.isdir(jni) else jni)
+                      sdl_h = self._find_header(join(jni, "SDL"), "SDL.h") or [join(jni, "SDL", "include")]
+                      ttf_h = self._find_header(jni, "SDL_ttf.h")
+                      img_h = self._find_header(jni, "SDL_image.h")
+                      mix_h = self._find_header(jni, "SDL_mixer.h")
+                      sdl_includes = (
+                          " " + self._inc(sdl_h)
+                          + " -L" + libs
+                          + " -L" + png_lib_dir
+                          + " -L" + jpeg_dir
+                          + ((" -L" + ndk_lib) if ndk_lib else "")
+                      )
+                      setup_file = setup_template.format_map(Fmt(
+                          sdl_includes=sdl_includes,
+                          sdl_ttf_includes=self._inc(ttf_h),
+                          sdl_image_includes=self._inc(img_h),
+                          sdl_mixer_includes=self._inc(mix_h),
+                          freetype_includes="",
+                          jpeg_includes="-I" + jpeg_dir,
+                          png_includes="-I" + png_dir,
+                      ))
+                      setup_file = re.sub(r"src_c/simd_\S+\.c\s*", "", setup_file)
+                      setup_file = re.sub(r"src_c/scale_mmx\.c\s*", "", setup_file)
+                      setup_file = re.sub(r"^scrap\s+.*$", "# scrap disabled", setup_file, flags=re.M)
+                      setup_file = setup_file.replace("-lharfbuzz", "")
+                      setup_file = setup_file.replace("-lfreetype", "")
+                      open("Setup", "w").write(setup_file)
+                      self._extra_cflags = " ".join([
+                          self._inc(sdl_h), self._inc(ttf_h), self._inc(img_h), self._inc(mix_h),
+                          "-I" + jpeg_dir, "-I" + png_dir,
+                          "-Wno-error", "-Wno-implicit-function-declaration",
+                      ])
+                      print("===== pygame Setup head =====")
+                      print("\n".join(setup_file.splitlines()[:20]))
+                      print("EXTRA CFLAGS", self._extra_cflags)
+
+              def build_compiled_components(self, arch):
+                  env = self.get_recipe_env(arch)
+                  hostpython = sh.Command(self.hostpython_location)
+                  with current_directory(self.get_build_dir(arch.arch)):
+                      print("BUILD_EXT pygame start")
+                      shprint(hostpython, "setup.py", "build_ext", "-v", _env=env)
+                      libs = glob.glob("build/lib.*")
+                      print("BUILD LIBS pygame", libs)
+                      if not libs:
+                          raise RuntimeError("pygame build_ext produced no lib")
+
+              def install_python_package(self, arch, name=None, env=None, is_dir=True):
+                  dest = self.ctx.get_python_install_dir(arch.arch)
+                  with current_directory(self.get_build_dir(arch.arch)):
+                      libs = glob.glob("build/lib.*")
+                      print("PYGAME LIBS", libs)
+                      if not libs:
+                          raise RuntimeError("pygame build/lib missing")
+                      src = join(libs[0], "pygame")
+                      dst = join(dest, "pygame")
+                      if os.path.isdir(dst):
+                          shutil.rmtree(dst)
+                      shutil.copytree(src, dst)
+                      print("COPIED pygame to", dst)
+
+              def get_recipe_env(self, arch):
+                  env = super().get_recipe_env(arch)
+                  env["USE_SDL2"] = "1"
+                  env["PYGAME_CROSS_COMPILE"] = "TRUE"
+                  env["PYGAME_ANDROID"] = "TRUE"
+                  env["PIP_USE_PEP517"] = "0"
+                  env["SETUPTOOLS_USE_DISTUTILS"] = "stdlib"
+                  env["_PYTHON_HOST_PLATFORM"] = "linux-aarch64"
+                  env["ARCHFLAGS"] = ""
+                  try:
+                      env["ANDROID_ROOT"] = join(self.ctx.ndk.sysroot, "usr")
+                  except Exception:
+                      pass
+                  extra = getattr(self, "_extra_cflags", "")
+                  if extra:
+                      env["CFLAGS"] = env.get("CFLAGS", "") + " " + extra
+                      env["CPPFLAGS"] = env.get("CPPFLAGS", "") + " " + extra
+                  return env
+
+          recipe = PygameCeRecipe()
+          ''').lstrip())
+
+          Path("app/p4a-recipes/numpy/__init__.py").write_text(textwrap.dedent(r'''
+          import glob
+          import os
+          import re
+          import sh
+          import shutil
+          import subprocess
+          from pythonforandroid.logger import shprint
+          from pythonforandroid.recipe import CompiledComponentsPythonRecipe
+          from pythonforandroid.toolchain import current_directory
+
+          MSVC_STUB = """
+          class MSVCCompiler(object):
+              def __init__(self, verbose=0, dry_run=0, force=0, *args, **kwargs):
+                  self.verbose = verbose
+                  self.dry_run = dry_run
+                  self.force = force
+              def initialize(self, *args, **kwargs):
+                  pass
+          def lib_opts_if_msvc(*args, **kwargs):
+              return []
+          """
+
+          OPT_PATCH = chr(10).join([
+              "",
+              "# skip SIMD on Android NDK clang",
+              "try:",
+              "    CCompilerOpt.cc_test_flags = lambda self, *a, **k: False",
+              "    CCompilerOpt.feature_test = lambda self, *a, **k: False",
+              "    CCompilerOpt.dist_test = lambda self, *a, **k: True",
+              "    print('PATCHED CCompilerOpt methods')",
+              "except Exception as _e:",
+              "    print('CCompilerOpt patch skip', _e)",
+          ])
+
+          class NumpyRecipe(CompiledComponentsPythonRecipe):
+              version = "1.24.3"
+              url = "https://github.com/numpy/numpy/archive/refs/tags/v{version}.tar.gz"
+              site_packages_name = "numpy"
+              depends = ["setuptools"]
+              call_hostpython_via_targetpython = False
+              install_in_hostpython = False
+
+              def _ensure_host_pkgs(self):
+                  host = getattr(self.ctx, "hostpython", None)
+                  print("ENSURE HOST host=", host)
+                  if not host or not os.path.isfile(host):
+                      return
+                  subprocess.call([host, "-m", "ensurepip", "--upgrade"])
+                  subprocess.check_call([
+                      host, "-m", "pip", "install",
+                      "setuptools==59.8.0", "wheel==0.38.4", "cython==0.29.36",
+                  ])
+
+              def prebuild_arch(self, arch):
+                  super().prebuild_arch(arch)
+                  self._ensure_host_pkgs()
+                  build = self.get_build_dir(arch.arch)
+                  print("NUMPY BUILD DIR", build)
+                  ppt = os.path.join(build, "pyproject.toml")
+                  if os.path.isfile(ppt):
+                      os.remove(ppt)
+                      print("REMOVED numpy pyproject.toml")
+                  for path in glob.glob(os.path.join(build, "**", "mingw32ccompiler.py"), recursive=True):
+                      text = open(path, encoding="utf-8", errors="ignore").read()
+                      text = re.sub(
+                          r"^([ \t]*)from distutils\.msvccompiler import[^\n]*$",
+                          r"\1get_build_msvc_version = lambda: None",
+                          text,
+                          flags=re.M,
+                      )
+                      open(path, "w", encoding="utf-8").write(text)
+                      print("PATCHED mingw", path)
+                  for path in glob.glob(os.path.join(build, "**", "msvccompiler.py"), recursive=True):
+                      if "distutils" in path and "numpy" in path:
+                          open(path, "w", encoding="utf-8").write(MSVC_STUB)
+                          print("STUB msvc", path)
+                  for path in glob.glob(os.path.join(build, "**", "ccompiler_opt.py"), recursive=True):
+                      text = open(path, encoding="utf-8", errors="ignore").read()
+                      if "PATCHED CCompilerOpt methods" not in text:
+                          open(path, "a", encoding="utf-8").write(OPT_PATCH)
+                          print("PATCHED ccompiler_opt", path)
+                  for path in glob.glob(os.path.join(build, "**", "setup.py"), recursive=True):
+                      text = open(path, encoding="utf-8", errors="ignore").read()
+                      if "check_math_capabilities" not in text:
+                          continue
+                      new = re.sub(
+                          r"def check_math_capabilities\s*\([^)]*\):",
+                          'def check_math_capabilities(*args, **kwargs):\n    print("SKIP check_math_capabilities")\n    return',
+                          text,
+                          count=1,
+                      )
+                      new = new.replace("call=True", "call=False")
+                      open(path, "w", encoding="utf-8").write(new)
+                      print("PATCHED skip math fn", path)
+
+              def build_compiled_components(self, arch):
+                  self._ensure_host_pkgs()
+                  env = self.get_recipe_env(arch)
+                  hostpython = sh.Command(self.hostpython_location)
+                  with current_directory(self.get_build_dir(arch.arch)):
+                      print("BUILD_EXT numpy start")
+                      shprint(hostpython, "setup.py", "build_ext", "-v", _env=env)
+                      libs = glob.glob("build/lib.*")
+                      print("BUILD LIBS numpy", libs)
+                      if not libs:
+                          raise RuntimeError("numpy build_ext produced no lib")
+                      if "x86_64" in libs[0]:
+                          raise RuntimeError("numpy built for host x86_64, not aarch64: " + libs[0])
+
+              def install_python_package(self, arch, name=None, env=None, is_dir=True):
+                  dest = self.ctx.get_python_install_dir(arch.arch)
+                  with current_directory(self.get_build_dir(arch.arch)):
+                      libs = glob.glob("build/lib.*")
+                      print("NUMPY LIBS", libs)
+                      if not libs:
+                          raise RuntimeError("numpy build/lib missing")
+                      src = os.path.join(libs[0], "numpy")
+                      dst = os.path.join(dest, "numpy")
+                      if os.path.isdir(dst):
+                          shutil.rmtree(dst)
+                      shutil.copytree(src, dst)
+                      print("COPIED numpy to", dst)
+
+              def get_recipe_env(self, arch):
+                  env = super().get_recipe_env(arch)
+                  host = getattr(self.ctx, "hostpython", None)
+                  if host:
+                      env["PATH"] = os.path.dirname(host) + os.pathsep + env.get("PATH", "")
+                  env["NPY_DISABLE_SVML"] = "1"
+                  env["NPY_DISABLE_OPTIMIZATION"] = "1"
+                  env["NPY_BLAS_ORDER"] = ""
+                  env["NPY_LAPACK_ORDER"] = ""
+                  env["BLAS"] = "None"
+                  env["LAPACK"] = "None"
+                  env["ATLAS"] = "None"
+                  env["SETUPTOOLS_USE_DISTUTILS"] = "stdlib"
+                  env["PIP_USE_PEP517"] = "0"
+                  env["_PYTHON_HOST_PLATFORM"] = "linux-aarch64"
+                  env["ARCHFLAGS"] = ""
+                  extra = " -lm -Wno-error -Wno-unsupported-floating-point-opt -fno-trapping-math -Wno-implicit-function-declaration -DNPY_DISABLE_OPTIMIZATION"
+                  env["LDFLAGS"] = env.get("LDFLAGS", "") + " -lm"
+                  env["LIBS"] = env.get("LIBS", "") + " -lm"
+                  env["CFLAGS"] = env.get("CFLAGS", "") + extra
+                  env["CPPFLAGS"] = env.get("CPPFLAGS", "") + extra
+                  return env
+
+          recipe = NumpyRecipe()
+          ''').lstrip())
+
+          for name in ("pygame-ce", "numpy"):
+              compile(Path(f"app/p4a-recipes/{name}/__init__.py").read_text(), name, "exec")
+          print("recipes syntax OK")
+          ENDPY
+
+      - name: Patch buildozer.spec
+        run: |
+          python3 << 'PY'
+          from pathlib import Path
+          import re
+          p = Path("app/buildozer.spec")
+          t = p.read_text(encoding="utf-8", errors="ignore")
+          def set_opt(text, key, val):
+              pat = rf'(?m)^[ \t]*#?[ \t]*{re.escape(key)}[ \t]*=.*$'
+              line = f"{key} = {val}"
+              if re.search(pat, text):
+                  return re.sub(pat, line, text)
+              return re.sub(r'(?m)^\[app\][ \t]*$', "[app]\n" + line, text, count=1)
+          t = set_opt(t, "android.accept_sdk_license", "True")
+          t = set_opt(t, "p4a.branch", "master")
+          t = set_opt(t, "p4a.local_recipes", "./p4a-recipes")
+          t = set_opt(t, "android.ndk", "25b")
+          t = set_opt(t, "android.api", "34")
+          t = set_opt(t, "android.minapi", "24")
+          t = set_opt(t, "android.ndk_api", "24")
+          t = set_opt(t, "android.archs", "arm64-v8a")
+          t = set_opt(t, "source.filename", "main.py")
+          t = set_opt(t, "requirements", "python3==3.11.10,hostpython3==3.11.10,pygame-ce,sdl2,sdl2_image,sdl2_mixer,sdl2_ttf,png,jpeg,numpy")
+          t = set_opt(t, "source.include_exts", "py,png,jpg,mp3,webp,flac,log,prof,ttf,ttc,txt,json,pkl,pyc")
+          t = set_opt(t, "android.permissions", "WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE")
+          t = set_opt(t, "android.wakelock", "True")
+          p.write_text(t, encoding="utf-8")
+          PY
+          grep -n -E '^(requirements|source.filename|p4a\.|android\.(ndk|api|minapi|ndk_api|archs))\s*=' app/buildozer.spec
+
+      - name: Build APK
+        run: |
+          set +e
+          cd app
+          buildozer -v android debug > ../out.txt 2>&1
+          code=$?
+          mkdir -p ../art
+          cp ../out.txt ../art/build.log
+          find . -name "*.apk" -exec cp {} ../art/ \;
+          cd ..
+          python3 extract.py
+          ls -la art
+          exit $code
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-out
+          path: art
+          if-no-files-found: ignore
