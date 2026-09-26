@@ -1,12 +1,6 @@
 # bulidozer apk
-
-<details>
-  <summary>thing</sumary>
-
   - it's **ai generate code**, but it is me use very much **grok token**!! 
   - in **workflows** have main, you can **buildozer** it!!
-
-</details>
 
 # game-easy-use-code
 share the easy use code, in order to avoid repeating the logic
