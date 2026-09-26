@@ -22,7 +22,7 @@ jobs:
       - name: Download ZIP from Release
         run: |
           set -e
-          TAG=v0.7.1
+          TAG=v0.1.0
           REPO="$GITHUB_REPOSITORY"
           rm -rf app extracted release.zip
           echo "REPO=$REPO TAG=$TAG"
