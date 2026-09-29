@@ -1,0 +1,404 @@
+name: main
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  PYTHONFORANDROID_PREREQUISITES_INSTALL_INTERACTIVE: 0
+  APP_ANDROID_ACCEPT_SDK_LICENSE: "1"
+  ANDROID_SDK_ROOT: /home/runner/.buildozer/android/platform/android-sdk
+  ANDROID_HOME: /home/runner/.buildozer/android/platform/android-sdk
+  PIP_USE_PEP517: "0"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build_unsigned:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Download ZIP from Release
+        run: |
+          set -e
+          TAG=v0.7.2.1
+          REPO="$GITHUB_REPOSITORY"
+          rm -rf app extracted release.zip
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          gh release view "$TAG" --repo "$REPO"
+          if gh release download "$TAG" --repo "$REPO" -p "*.zip" --clobber; then
+            ZIP=$(ls -1 *.zip | head -1)
+            mv "$ZIP" release.zip
+          else
+            gh api "repos/$REPO/zipball/$TAG" > release.zip
+          fi
+          mkdir -p extracted
+          unzip -q release.zip -d extracted
+          PROJECT_DIR=$(find extracted -type f -name "main.py" -exec dirname {} \; | head -1)
+          if [ -z "$PROJECT_DIR" ]; then
+            PROJECT_DIR=$(find extracted -type f -name "__main__.py" -exec dirname {} \; | head -1)
+          fi
+          if [ -z "$PROJECT_DIR" ]; then
+            find extracted -maxdepth 5
+            exit 1
+          fi
+          if [ -d "$PROJECT_DIR/imprisonment" ]; then
+            PROJECT_DIR="$PROJECT_DIR/imprisonment"
+          fi
+          mkdir -p app
+          cp -r "$PROJECT_DIR"/. app/
+          if [ ! -f app/main.py ] && [ -f app/__main__.py ]; then
+            cp app/__main__.py app/main.py
+          fi
+          rm -f app/setup.py app/pyproject.toml app/_game_main.py
+          test -f app/main.py
+          test -f app/buildozer.spec
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Cache NDK/SDK
+        uses: actions/cache@v5
+        with:
+          path: /home/runner/.buildozer
+          key: buildozer-ndk25b-sdk34-v3
+
+      - name: Setup Environment
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y git zip unzip wget python3-pip python3-venv autoconf automake libltdl-dev libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev build-essential gettext
+          pip3 install --user --upgrade buildozer "cython==0.29.36" "setuptools==59.8.0"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          SDK="$ANDROID_SDK_ROOT"
+          mkdir -p "$SDK/cmdline-tools" "$SDK/licenses" "$HOME/.android"
+          touch "$HOME/.android/repositories.cfg"
+          if [ ! -x "$SDK/cmdline-tools/latest/bin/sdkmanager" ]; then
+            curl -fsSL -o /tmp/cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+            unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools
+            rm -rf "$SDK/cmdline-tools/latest"
+            mv /tmp/cmdtools/cmdline-tools "$SDK/cmdline-tools/latest"
+          fi
+          echo "24333f8a63b6825ea9c5514f07c3498d" > "$SDK/licenses/android-sdk-license"
+          echo "84831b9409646161cbf74d67cb9a794" > "$SDK/licenses/android-sdk-preview-license"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" --licenses >/dev/null || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          mkdir -p "$SDK/tools/bin"
+          ln -sf "$SDK/cmdline-tools/latest/bin/sdkmanager" "$SDK/tools/bin/sdkmanager"
+
+      - name: Add local p4a recipes
+        run: |
+          python3 << 'ENDPY'
+          import textwrap
+          from pathlib import Path
+          Path("app/p4a-recipes/pygame-ce").mkdir(parents=True, exist_ok=True)
+          Path("extract.py").write_text(textwrap.dedent(r'''
+          from pathlib import Path
+          p = Path("out.txt")
+          lines = p.read_text(errors="ignore").splitlines() if p.exists() else []
+          skip = ("grpmodule", "Wimplicit", "print-multi-os", "CMake", "GITHUB_", "export ")
+          keys = ("FOUND HEADER", "REWROTE pyproject", "PATCHED setup.py", "ENSURE HOST", "HOST CYTHON", "HOST PIP", "CYTHON ", "BUILD_EXT", "BUILD LIBS", "COPIED ", "You need cython", "BUILD FAILURE", "No main.py", "Copying main.py", "full private data", "Command failed", "available in the bin", "PREPENDED", "gradlew", "FAILURE:")
+          print("=== KEY ===")
+          n = 0
+          for l in lines:
+              if any(s in l for s in skip):
+                  continue
+              if l.startswith("# ") and " = " in l:
+                  continue
+              if any(k in l for k in keys):
+                  print(l[:400]); n += 1
+                  if n >= 50:
+                      break
+          print("=== TAIL ===")
+          useful = [l for l in lines if not (l.startswith("export ") or (l.startswith("# ") and " = " in l) or any(s in l for s in skip))]
+          for l in useful[-50:]:
+              print(l[:400])
+          '''))
+          Path("app/p4a-recipes/pygame-ce/__init__.py").write_text(textwrap.dedent(r'''
+          import glob, os, re, sh, shutil, subprocess
+          from os.path import exists, join
+          from pythonforandroid.logger import shprint
+          from pythonforandroid.recipe import CompiledComponentsPythonRecipe
+          from pythonforandroid.toolchain import current_directory
+          BAD = ("Xcode", ".framework", "macOS", "iOS", "tvOS", "VisualC", "mingw", "darwin", "windows")
+          class Fmt(dict):
+              def __missing__(self, key):
+                  print("SETUP PLACEHOLDER MISSING", key)
+                  return ""
+          class PygameCeRecipe(CompiledComponentsPythonRecipe):
+              version = "2.5.5"
+              url = "https://github.com/pygame-community/pygame-ce/archive/refs/tags/{version}.tar.gz"
+              site_packages_name = "pygame"
+              name = "pygame-ce"
+              depends = ["sdl2", "sdl2_image", "sdl2_mixer", "sdl2_ttf", "setuptools", "jpeg", "png"]
+              call_hostpython_via_targetpython = False
+              install_in_hostpython = False
+              def _host_bin(self):
+                  cands = [getattr(self, "hostpython_location", None), getattr(self.ctx, "hostpython", None)]
+                  storage = getattr(self.ctx, "storage_dir", "") or ""
+                  if storage:
+                      cands.extend(glob.glob(join(storage, "build", "other_builds", "hostpython3", "*", "hostpython3", "native-build", "root", "usr", "local", "bin", "python")))
+                  for h in cands:
+                      if h and os.path.exists(h) and os.access(h, os.X_OK):
+                          return h
+                  return None
+              def _host_env(self):
+                  env = os.environ.copy()
+                  for k in ("CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS", "CPPFLAGS", "AR", "LD", "ARCHFLAGS", "_PYTHON_HOST_PLATFORM", "NDK_CC", "NDK_CXX", "PYTHONHOME", "PYTHONPATH"):
+                      env.pop(k, None)
+                  env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+                  env["PIP_USE_PEP517"] = "0"
+                  return env
+              def _host_site(self, host):
+                  sites = []
+                  root = os.path.dirname(os.path.dirname(os.path.abspath(host)))
+                  sites.extend(glob.glob(join(root, "lib", "python*", "site-packages")))
+                  try:
+                      out = subprocess.check_output([host, "-c", "import site; print('\\n'.join(site.getsitepackages()))"], env=self._host_env(), text=True)
+                      for line in out.splitlines():
+                          if line and line not in sites:
+                              sites.append(line)
+                  except Exception as e:
+                      print("SITE LIST FAIL", e)
+                  print("HOST SITES", sites)
+                  return sites
+              def _ensure_host_pkgs(self, required=False):
+                  host = self._host_bin()
+                  print("ENSURE HOST host=", host, "required=", required)
+                  if not host:
+                      if required:
+                          raise RuntimeError("hostpython missing")
+                      print("ENSURE HOST skip, not ready")
+                      return []
+                  env = self._host_env()
+                  probe = subprocess.call([host, "-c", "import Cython; print(Cython.__version__)"], env=env)
+                  print("CYTHON PROBE", probe)
+                  if probe != 0:
+                      subprocess.call([host, "-m", "ensurepip", "--upgrade"], env=env)
+                      cmd = [host, "-m", "pip", "install", "setuptools==59.8.0", "wheel==0.38.4", "cython==0.29.36"]
+                      print("HOST PIP", cmd)
+                      subprocess.check_call(cmd, env=env)
+                      subprocess.check_call([host, "-c", "import Cython; print(Cython.__version__)"], env=env)
+                  print("HOST CYTHON OK")
+                  return self._host_site(host)
+              def _find_header(self, root, filename):
+                  hits = []
+                  if not root or not os.path.isdir(root):
+                      return hits
+                  for dirpath, dirnames, files in os.walk(root):
+                      dirnames[:] = [d for d in dirnames if d not in (".git", "test", "docs", "Xcode", "VisualC", "mingw")]
+                      if filename not in files:
+                          continue
+                      if any(b in dirpath for b in BAD):
+                          continue
+                      hits.append(dirpath)
+                      parent = os.path.dirname(dirpath)
+                      if os.path.basename(dirpath) == "SDL2" and parent not in hits:
+                          hits.append(parent)
+                      print("FOUND HEADER", filename, dirpath)
+                  hits.sort(key=lambda p: (0 if p.replace("\\\\", "/").endswith("/include") else 1, len(p)))
+                  return hits
+              def _inc(self, dirs):
+                  return " ".join("-I" + d for d in dirs[:4])
+              def prebuild_arch(self, arch):
+                  super().prebuild_arch(arch)
+                  self._cython_sites = self._ensure_host_pkgs(required=False)
+                  with current_directory(self.get_build_dir(arch.arch)):
+                      open("pyproject.toml", "w").write("[project]\nname = \"pygame-ce\"\nversion = \"2.5.5\"\ndescription = \"Python Game Development\"\nreadme = \"README.rst\"\nrequires-python = \">=3.9\"\n\n[build-system]\nrequires = [\"setuptools\", \"wheel\"]\nbuild-backend = \"setuptools.build_meta\"\n")
+                      print("REWROTE pyproject.toml (keep version, skip meson)")
+                      sp = open("setup.py").read().replace("from setuptools import setup", "from distutils.core import setup")
+                      open("setup.py", "w").write(sp)
+                      print("PATCHED setup.py to distutils")
+                      setup_template = open(join("buildconfig", "Setup.Android.SDL2.in")).read()
+                      png = self.get_recipe("png", self.ctx)
+                      png_dir = png.get_build_dir(arch.arch)
+                      png_lib_dir = join(png_dir, ".libs") if exists(join(png_dir, ".libs")) else png_dir
+                      jpeg = self.get_recipe("jpeg", self.ctx)
+                      jpeg_dir = jpeg.get_build_dir(arch.arch)
+                      boot = self.ctx.bootstrap.build_dir
+                      jni = join(boot, "jni")
+                      libs = join(boot, "libs", arch.arch)
+                      ndk_lib = getattr(arch, "ndk_lib_dir_versioned", "")
+                      sdl_h = self._find_header(join(jni, "SDL"), "SDL.h") or [join(jni, "SDL", "include")]
+                      ttf_h = self._find_header(jni, "SDL_ttf.h")
+                      img_h = self._find_header(jni, "SDL_image.h")
+                      mix_h = self._find_header(jni, "SDL_mixer.h")
+                      sdl_includes = " " + self._inc(sdl_h) + " -L" + libs + " -L" + png_lib_dir + " -L" + jpeg_dir + ((" -L" + ndk_lib) if ndk_lib else "")
+                      setup_file = setup_template.format_map(Fmt(sdl_includes=sdl_includes, sdl_ttf_includes=self._inc(ttf_h), sdl_image_includes=self._inc(img_h), sdl_mixer_includes=self._inc(mix_h), freetype_includes="", jpeg_includes="-I" + jpeg_dir, png_includes="-I" + png_dir))
+                      setup_file = re.sub(r"src_c/simd_\S+\.c\s*", "", setup_file)
+                      setup_file = re.sub(r"src_c/scale_mmx\.c\s*", "", setup_file)
+                      setup_file = re.sub(r"^scrap\s+.*$", "# scrap disabled", setup_file, flags=re.M)
+                      setup_file = setup_file.replace("-lharfbuzz", "").replace("-lfreetype", "")
+                      open("Setup", "w").write(setup_file)
+                      self._extra_cflags = " ".join([self._inc(sdl_h), self._inc(ttf_h), self._inc(img_h), self._inc(mix_h), "-I" + jpeg_dir, "-I" + png_dir, "-Wno-error", "-Wno-implicit-function-declaration"])
+                      print("EXTRA CFLAGS", self._extra_cflags)
+              def build_compiled_components(self, arch):
+                  sites = self._ensure_host_pkgs(required=True)
+                  env = self.get_recipe_env(arch)
+                  if sites:
+                      env["PYTHONPATH"] = ":".join(sites) + ":" + env.get("PYTHONPATH", "")
+                      print("CYTHON PYTHONPATH", env["PYTHONPATH"][:300])
+                  host = self._host_bin()
+                  r = subprocess.call([host, "-c", "import Cython; print('CYTHON VISIBLE', Cython.__version__)"], env=env)
+                  print("CYTHON IN BUILD ENV", r)
+                  if r != 0:
+                      raise RuntimeError("Cython not visible to pygame setup.py")
+                  hostpython = sh.Command(host)
+                  with current_directory(self.get_build_dir(arch.arch)):
+                      print("BUILD_EXT pygame start")
+                      shprint(hostpython, "setup.py", "build_ext", "-v", _env=env)
+                      libs = glob.glob("build/lib.*")
+                      print("BUILD LIBS pygame", libs)
+                      if not libs:
+                          raise RuntimeError("pygame build_ext produced no lib")
+              def install_python_package(self, arch, name=None, env=None, is_dir=True):
+                  dest = self.ctx.get_python_install_dir(arch.arch)
+                  with current_directory(self.get_build_dir(arch.arch)):
+                      libs = glob.glob("build/lib.*")
+                      print("PYGAME LIBS", libs)
+                      if not libs:
+                          raise RuntimeError("pygame build/lib missing")
+                      src = join(libs[0], "pygame")
+                      dst = join(dest, "pygame")
+                      if os.path.isdir(dst):
+                          shutil.rmtree(dst)
+                      shutil.copytree(src, dst)
+                      print("COPIED pygame to", dst)
+              def get_recipe_env(self, arch):
+                  env = super().get_recipe_env(arch)
+                  env["USE_SDL2"] = "1"
+                  env["PYGAME_CROSS_COMPILE"] = "TRUE"
+                  env["PYGAME_ANDROID"] = "TRUE"
+                  env["PIP_USE_PEP517"] = "0"
+                  env["SETUPTOOLS_USE_DISTUTILS"] = "stdlib"
+                  env["_PYTHON_HOST_PLATFORM"] = "linux-aarch64"
+                  env["ARCHFLAGS"] = ""
+                  extra = getattr(self, "_extra_cflags", "")
+                  if extra:
+                      env["CFLAGS"] = env.get("CFLAGS", "") + " " + extra
+                      env["CPPFLAGS"] = env.get("CPPFLAGS", "") + " " + extra
+                  sites = getattr(self, "_cython_sites", None)
+                  if sites:
+                      env["PYTHONPATH"] = ":".join(sites) + ":" + env.get("PYTHONPATH", "")
+                  return env
+          recipe = PygameCeRecipe()
+          ''').lstrip())
+          compile(Path("app/p4a-recipes/pygame-ce/__init__.py").read_text(), "pygame-ce", "exec")
+          print("recipes syntax OK")
+          ENDPY
+
+      - name: Patch buildozer.spec
+        run: |
+          python3 << 'PY'
+          from pathlib import Path
+          import re
+          p = Path("app/buildozer.spec")
+          t = p.read_text(encoding="utf-8", errors="ignore")
+          def set_opt(text, key, val):
+              pat = rf'(?m)^[ \t]*#?[ \t]*{re.escape(key)}[ \t]*=.*$'
+              line = f"{key} = {val}"
+              if re.search(pat, text):
+                  return re.sub(pat, line, text)
+              return re.sub(r'(?m)^\[app\][ \t]*$', "[app]\n" + line, text, count=1)
+          t = set_opt(t, "version", "0.7.2.1")
+          t = set_opt(t, "android.accept_sdk_license", "True")
+          t = set_opt(t, "p4a.branch", "master")
+          t = set_opt(t, "p4a.local_recipes", "./p4a-recipes")
+          t = set_opt(t, "p4a.setup_py", "False")
+          t = set_opt(t, "android.ndk", "25b")
+          t = set_opt(t, "android.api", "34")
+          t = set_opt(t, "android.minapi", "24")
+          t = set_opt(t, "android.ndk_api", "24")
+          t = set_opt(t, "android.archs", "arm64-v8a")
+          t = set_opt(t, "source.filename", "main.py")
+          t = set_opt(t, "requirements", "python3==3.11.10,hostpython3==3.11.10,pygame-ce,sdl2,sdl2_image,sdl2_mixer,sdl2_ttf,png,jpeg")
+          t = set_opt(t, "android.permissions", "WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE")
+          t = set_opt(t, "android.wakelock", "True")
+          t = re.sub(r'(?m)^[ \t]*#?[ \t]*source\.include_exts[ \t]*=.*$', "#source.include_exts =", t)
+          t = re.sub(r'(?m)^[ \t]*#?[ \t]*android\.extra_manifest_application_arguments[ \t]*=.*$', "#android.extra_manifest_application_arguments =", t)
+          p.write_text(t, encoding="utf-8")
+          for fn in ("setup.py", "pyproject.toml", "extra_manifest.txt", "_game_main.py"):
+              fp = Path("app") / fn
+              if fp.exists():
+                  fp.unlink()
+          main = Path("app/main.py")
+          orig = main.read_text(encoding="utf-8", errors="ignore")
+          hook = (
+              "import os, sys, traceback\n"
+              "def _log(msg):\n"
+              "    homes = []\n"
+              "    for k in ('ANDROID_PRIVATE', 'ANDROID_ARGUMENT'):\n"
+              "        v = os.environ.get(k)\n"
+              "        if v:\n"
+              "            homes.append(v)\n"
+              "    homes.append(os.path.dirname(os.path.abspath(__file__)))\n"
+              "    homes.append('/sdcard/Download')\n"
+              "    homes.append('/storage/emulated/0/Download')\n"
+              "    for h in homes:\n"
+              "        try:\n"
+              "            os.makedirs(h, exist_ok=True)\n"
+              "            with open(os.path.join(h, 'imprison-crash.txt'), 'a', encoding='utf-8') as f:\n"
+              "                f.write(msg + chr(10))\n"
+              "        except Exception:\n"
+              "            pass\n"
+              "_log('boot ' + sys.version)\n"
+              "_log('cwd=' + os.getcwd())\n"
+              "try:\n"
+              "    _log('ls=' + ','.join(sorted(os.listdir('.'))[:40]))\n"
+              "except Exception as e:\n"
+              "    _log('ls fail ' + repr(e))\n"
+              "def _hook(t, v, tb):\n"
+              "    _log(''.join(traceback.format_exception(t, v, tb)))\n"
+              "    sys.__excepthook__(t, v, tb)\n"
+              "sys.excepthook = _hook\n"
+          )
+          if "sys.excepthook = _hook" not in orig:
+              lines = orig.splitlines(keepends=True)
+              i = 0
+              if lines and lines[0].startswith("#!"):
+                  i = 1
+              if i < len(lines) and re.search(r"coding[:=]", lines[i]):
+                  i += 1
+              while i < len(lines) and lines[i].lstrip().startswith("from __future__ import"):
+                  i += 1
+              main.write_text("".join(lines[:i]) + hook + "".join(lines[i:]), encoding="utf-8")
+              print("PREPENDED crash hook into main.py")
+          PY
+          test -f app/main.py
+          test ! -f app/_game_main.py
+
+      - name: Build APK
+        run: |
+          set +e
+          cd app
+          test -f main.py
+          test ! -f setup.py
+          test ! -f _game_main.py
+          buildozer -v android debug > ../out.txt 2>&1
+          code=$?
+          mkdir -p ../art
+          cp ../out.txt ../art/build.log
+          find . -name "*.apk" -exec cp {} ../art/ \;
+          cd ..
+          python3 extract.py
+          ls -lah art
+          exit $code
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-out
+          path: art
+          if-no-files-found: ignore
+
+      - name: Upload APK to Release
+        if: success()
+        run: |
+          set -e
+          ls -lah art
+          gh release upload "$TAG" art/*.apk --repo "$GITHUB_REPOSITORY" --clobber
