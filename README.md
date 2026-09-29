@@ -1,6 +1,8 @@
 # bulidozer apk
   - it's **ai generate code**, but it is me use very much **grok token**!! 
   - in **workflows** have main, you can **buildozer** it!!
+  - **first**:  you add releases, and put your code zip.
+  - **second**, you change the tag and the version. 
 
 # game-easy-use-code
 share the easy use code, in order to avoid repeating the logic
