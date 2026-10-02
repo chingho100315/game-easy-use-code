@@ -1,7 +1,7 @@
 imoort pygame
 import sys
 
-def Buffers(x, c, w, h, s=False):
+def buffers(x, c, w, h, s=False):
     a = pygame.Surface((w, h))
     fps = 1
 
