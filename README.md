@@ -48,6 +48,12 @@ you can see the the [update](https://github.com/chingho100315/game-easy-use-code
 
 </details>
 
+<details>
+  <summary>pygame-add-tick</summary>
+
+  - in [buffer](.maincode/buffer.py), have **add - tick** file, you can **download** and **import** it. 
+</details>
+
 ---
 
 <details>
