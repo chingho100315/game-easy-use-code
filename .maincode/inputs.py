@@ -9,7 +9,7 @@ pygame.font.init()
 screen = pygame.display.set_mode((800, 600))
 pygame.display.set_caption("how")
 clock = pygame.time.Clock()
-font = pygame.font.Font("金陵.ttf", 40)  # 使用系统默认字体（安卓上兼容中文）
+font = pygame.font.Font("font.ttf", 40)  # 使用系统默认字体（安卓上兼容中文）
 
 # 输入框位置和状态
 input_rect = pygame.Rect(100, 200, 600, 60)
