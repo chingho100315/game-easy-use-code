@@ -1,4 +1,4 @@
-name: imprisonment v0.7.6.1
+name: apk - end
 
 env:
   GH_TOKEN: ${{ github.token }}
@@ -22,7 +22,7 @@ jobs:
       - name: Download ZIP from Release
         run: |
           set -e
-          TAG=v0.7.6.1
+          TAG=v0.1.0
           REPO="$GITHUB_REPOSITORY"
           rm -rf app extracted release.zip
           echo "TAG=$TAG" >> "$GITHUB_ENV"
@@ -489,7 +489,7 @@ jobs:
               if re.search(pat, text):
                   return re.sub(pat, line, text)
               return re.sub(r'(?m)^\[app\][ \t]*$', "[app]\n" + line, text, count=1)
-          t = set_opt(t, "version", "0.7.6.1")
+          t = set_opt(t, "version", "0.1.0")
           t = set_opt(t, "android.accept_sdk_license", "True")
           t = set_opt(t, "p4a.branch", "master")
           t = set_opt(t, "p4a.local_recipes", "./p4a-recipes")
